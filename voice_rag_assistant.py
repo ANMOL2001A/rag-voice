@@ -4,11 +4,12 @@ import os
 import subprocess
 import wave
 import time
+import threading  # NEW: For async TTS
 from collections import deque
 
 import numpy as np
 import sounddevice as sd
-from dotenv import load_dotenv  # NEW
+from dotenv import load_dotenv
 
 try:
     import webrtcvad
@@ -145,6 +146,7 @@ def _init_tts():
     except Exception as e:
         print(f"[TTS] pyttsx3 init failed: {e}. Audio output disabled.")
 
+
 def clean_text_for_tts(text: str) -> str:
     """Clean text to avoid TTS character issues."""
     replacements = {
@@ -155,13 +157,46 @@ def clean_text_for_tts(text: str) -> str:
         "—": "-",  # em dash to hyphen
         "–": "-",  # en dash to hyphen
         "…": "...",  # ellipsis
-        "‑": "-",  # non-breaking hyphen (this one is causing your error!)
+        "‑": "-",  # non-breaking hyphen
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
     return text
 
+
+def speak_async(text: str):
+    """Non-blocking TTS - starts speaking while continuing execution."""
+    if not text:
+        return
+    
+    def _speak_worker():
+        if _tts_engine is None:
+            _init_tts()
+        
+        # Clean text before TTS
+        clean_text = clean_text_for_tts(text)
+        
+        if hasattr(_tts_engine, "tts"):  # Coqui API
+            try:
+                wav = _tts_engine.tts(clean_text)
+                sd.play(np.array(wav), samplerate=22050)
+                sd.wait()
+            except Exception as e:
+                print(f"[TTS] Coqui failed: {e}")
+        else:  # pyttsx3
+            try:
+                _tts_engine.say(clean_text)
+                _tts_engine.runAndWait()
+            except Exception as e:
+                print(f"[TTS] speak failed: {e}")
+    
+    # Start TTS in background thread
+    tts_thread = threading.Thread(target=_speak_worker, daemon=True)
+    tts_thread.start()
+
+
 def speak(text: str):
+    """Synchronous TTS - blocks until speech is complete."""
     if not text:
         return
     if _tts_engine is None:
@@ -171,9 +206,12 @@ def speak(text: str):
     clean_text = clean_text_for_tts(text)
     
     if hasattr(_tts_engine, "tts"):  # Coqui API
-        wav = _tts_engine.tts(clean_text)
-        sd.play(np.array(wav), samplerate=22050)
-        sd.wait()
+        try:
+            wav = _tts_engine.tts(clean_text)
+            sd.play(np.array(wav), samplerate=22050)
+            sd.wait()
+        except Exception as e:
+            print(f"[TTS] Coqui failed: {e}")
     else:  # pyttsx3
         try:
             _tts_engine.say(clean_text)
@@ -282,6 +320,7 @@ def rag_answer(question: str) -> str:
     for phrase, response in casual_responses.items():
         if phrase in question_lower:
             return response
+            
     docs = retriever.invoke(question)
     if not docs:
         context = "(no documents retrieved)"
@@ -316,5 +355,5 @@ if __name__ == "__main__":
         except Exception as e:
             answer = f"I hit an error generating the answer: {e}"
         print(f"Assistant: {answer}")
-        speak(answer)
+        speak_async(answer)
         chat_history.append((user_query, answer))
