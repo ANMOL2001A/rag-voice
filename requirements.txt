@@ -1,0 +1,7 @@
+langchain 
+sentence-transformers 
+chromadb 
+coqui-tts
+sounddevice 
+numpy
+groq
