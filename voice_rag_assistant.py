@@ -57,9 +57,11 @@ if not GROQ_API_KEY:
 chat_llm = ChatGroq(api_key=GROQ_API_KEY, model=GROQ_MODEL)
 
 SYSTEM_PROMPT = (
-    "You are a helpful, warm RAG assistant. Answer ONLY using the provided context. "
-    "If the answer isn't in the context, say you don't have that info. "
-    "Keep replies concise and natural."
+    "You are a helpful, warm RAG assistant. "
+    "For specific questions, answer using the provided context. "
+    "For casual greetings or general conversation, respond naturally and warmly. "
+    "If a specific answer isn't in the context, say you don't have that information. "
+    "Keep replies concise and conversational."
 )
 
 prompt = ChatPromptTemplate.from_messages([
@@ -143,19 +145,38 @@ def _init_tts():
     except Exception as e:
         print(f"[TTS] pyttsx3 init failed: {e}. Audio output disabled.")
 
+def clean_text_for_tts(text: str) -> str:
+    """Clean text to avoid TTS character issues."""
+    replacements = {
+        "'": "'",  # smart apostrophe to regular
+        "'": "'",  # another smart apostrophe  
+        """: '"',  # smart quotes
+        """: '"',
+        "—": "-",  # em dash to hyphen
+        "–": "-",  # en dash to hyphen
+        "…": "...",  # ellipsis
+        "‑": "-",  # non-breaking hyphen (this one is causing your error!)
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 def speak(text: str):
     if not text:
         return
     if _tts_engine is None:
         _init_tts()
+    
+    # Clean text before TTS
+    clean_text = clean_text_for_tts(text)
+    
     if hasattr(_tts_engine, "tts"):  # Coqui API
-        wav = _tts_engine.tts(text)
+        wav = _tts_engine.tts(clean_text)
         sd.play(np.array(wav), samplerate=22050)
         sd.wait()
     else:  # pyttsx3
         try:
-            _tts_engine.say(text)
+            _tts_engine.say(clean_text)
             _tts_engine.runAndWait()
         except Exception as e:
             print(f"[TTS] speak failed: {e}")
@@ -249,6 +270,18 @@ def format_history(hist):
 
 
 def rag_answer(question: str) -> str:
+    # Handle casual greetings/conversations
+    casual_responses = {
+        "how are we doing": "We're doing great! I'm here and ready to help you with any questions.",
+        "hello": "Hello! How can I help you today?",
+        "hi": "Hi there! What would you like to know?",
+        "how are you": "I'm doing well, thank you! How can I assist you?"
+    }
+    
+    question_lower = question.lower().strip()
+    for phrase, response in casual_responses.items():
+        if phrase in question_lower:
+            return response
     docs = retriever.invoke(question)
     if not docs:
         context = "(no documents retrieved)"

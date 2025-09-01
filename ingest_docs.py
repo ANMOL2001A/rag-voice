@@ -3,8 +3,8 @@
 import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_chroma import Chroma  # Updated import
+from langchain_huggingface import HuggingFaceEmbeddings  # Updated import
 
 CHROMA_DB_DIR = "./chroma_db"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -36,7 +36,7 @@ for file_name in os.listdir(DATA_DIR):
 # ============ STORE IN CHROMA ============
 if all_docs:
     vectorstore.add_documents(all_docs)
-    vectorstore.persist()
+    # Note: persist() is no longer needed in newer versions of Chroma
     print(f"✅ Ingested {len(all_docs)} chunks into Chroma DB")
 else:
     print("⚠️ No documents found to ingest.")
