@@ -15,7 +15,6 @@ class AppState:
     def reset_audio_flags(self):
         self.is_speaking.clear()
         self.stop_speaking.clear()
-        # Clear both queues
         while not self.tts_queue.empty():
             try:
                 self.tts_queue.get_nowait()

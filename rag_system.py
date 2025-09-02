@@ -1,5 +1,3 @@
-# rag_system.py
-
 from typing import Iterator
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -9,7 +7,6 @@ from langchain.prompts import ChatPromptTemplate
 from config import CHROMA_DB_DIR, EMBED_MODEL, GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT, CHUNK_SIZE
 from app_state import app_state
 
-# ============ EMBEDDINGS + DB SETUP ============
 try:
     embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
     vectorstore = Chroma(persist_directory=CHROMA_DB_DIR, embedding_function=embeddings)
@@ -19,7 +16,6 @@ except Exception as e:
     print(f"⚠️  Vector database setup failed: {e}")
     retriever = None
 
-# ============ LLM SETUP ============
 if not GROQ_API_KEY:
     raise RuntimeError("❌ GROQ_API_KEY env var is required. Put it in .env")
 
@@ -61,25 +57,21 @@ def format_history(hist, max_turns=2):
 def get_streaming_rag_response(question: str) -> Iterator[str]:
     """Get streaming response from RAG system"""
     try:
-        # Retrieve relevant documents
         context = ""
         if retriever:
             docs = retriever.invoke(question)
             if docs:
                 context = "\n\n".join([d.page_content[:800] for d in docs[:3]])
         
-        # Format history
         with app_state.lock:
             history_str = format_history(app_state.chat_history)
         
-        # Create messages
         messages = prompt.format_messages(
             context=context, 
             question=question, 
             history=history_str
         )
         
-        # Stream response
         accumulated_text = ""
         chunk_buffer = ""
         
@@ -92,12 +84,10 @@ def get_streaming_rag_response(question: str) -> Iterator[str]:
                 accumulated_text += content
                 chunk_buffer += content
                 
-                # When we have enough text for a chunk, yield it
                 if len(chunk_buffer) >= CHUNK_SIZE or content.endswith(('.', '!', '?', ',')):
                     yield chunk_buffer
                     chunk_buffer = ""
         
-        # Yield any remaining text
         if chunk_buffer and not app_state.stop_speaking.is_set():
             yield chunk_buffer
             

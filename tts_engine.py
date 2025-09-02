@@ -90,7 +90,6 @@ def clean_text_for_tts(text: str) -> str:
 
 def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE) -> list:
     """Split text into speakable chunks at sentence boundaries"""
-    # First split by sentences
     sentences = re.split(r'[.!?]+', text)
     chunks = []
     current_chunk = ""
@@ -100,14 +99,12 @@ def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE) -> list:
         if not sentence:
             continue
             
-        # If adding this sentence would exceed chunk size, save current chunk
         if current_chunk and len(current_chunk + " " + sentence) > chunk_size:
             chunks.append(current_chunk.strip())
             current_chunk = sentence
         else:
             current_chunk = (current_chunk + " " + sentence).strip()
     
-    # Add remaining chunk
     if current_chunk:
         chunks.append(current_chunk.strip())
     
@@ -273,18 +270,16 @@ def _tts_worker():
             print(f"❌ TTS synthesis worker error: {e}")
             break
     
-    print("🔇 TTS synthesis worker stopped")
+    print(" TTS synthesis worker stopped")
 
 def start_tts_workers():
     """Start both TTS synthesis and audio playback workers"""
     global _tts_worker_thread, _audio_player_thread
     
-    # Start synthesis worker
     if _tts_worker_thread is None or not _tts_worker_thread.is_alive():
         _tts_worker_thread = threading.Thread(target=_tts_worker, daemon=True)
         _tts_worker_thread.start()
     
-    # Start audio player worker
     if _audio_player_thread is None or not _audio_player_thread.is_alive():
         _audio_player_thread = threading.Thread(target=_audio_player_worker, daemon=True)
         _audio_player_thread.start()
@@ -293,18 +288,16 @@ def stop_tts_workers():
     """Stop both TTS workers"""
     global _tts_running
     _tts_running = False
-    app_state.tts_queue.put(None)  # Poison pill for synthesis worker
-    app_state.audio_queue.put(None)  # Poison pill for audio player
+    app_state.tts_queue.put(None) 
+    app_state.audio_queue.put(None)  
 
 def speak_streaming(text: str):
     """Add text to TTS queue for immediate synthesis and playback"""
     if not text or not text.strip():
         return
     
-    # Split text into smaller chunks for faster processing
     chunks = split_text_into_chunks(text, CHUNK_SIZE)
     
-    # Add chunks to synthesis queue immediately
     for chunk in chunks:
         if chunk:
             app_state.tts_queue.put(chunk)
