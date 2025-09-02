@@ -1,113 +1,92 @@
-# Enhanced Voice RAG Assistant
+# Enhanced Voice and Text RAG Assistant
 
-A voice-enabled RAG (Retrieval-Augmented Generation) assistant that allows natural conversation with your documents through speech.
+A voice-enabled and text-based RAG (Retrieval-Augmented Generation) assistant that allows natural conversation with your documents through speech or a command-line interface.
 
 ## Project Structure
 
 ```
-voice_rag_assistant/
-├── main.py                    # Main entry point - run this file
+/
+├── main.py                    # Main entry point for VOICE assistant
+├── query_terminal.py          # Entry point for TEXT-BASED querying
+├── conversation_handler.py    # Voice conversation loop logic
+├── rag_system.py              # RAG system with vector DB and LLM
+├── ingest_docs.py             # Script to load documents into the DB
+|
 ├── config.py                  # Configuration and environment variables
-├── app_state.py              # Thread-safe application state management
-├── audio_utils.py            # Audio processing, recording, and transcription
-├── tts_engine.py             # Text-to-speech engine and workers
-├── rag_system.py             # RAG system with vector database and LLM
-├── conversation_handler.py   # Main conversation loop logic
-├── requirements.txt          # Python dependencies
-└── .env                      # Environment variables (create this)
+├── app_state.py               # Thread-safe application state management
+├── audio_utils.py             # Audio processing, recording, and transcription
+├── tts_engine.py              # Text-to-speech engine and workers
+|
+├── requirements.txt           # Python dependencies
+├── .env                       # Environment variables (create this)
+├── docs/                      # Directory for your source documents
+└── chroma_db/                 # Default vector database location
 ```
 
-## Quick Start
+## Setup Instructions
 
-1. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+1.  **Clone the repository and navigate to the directory.**
 
-2. **Create `.env` file:**
-   ```
-   GROQ_API_KEY=your_groq_api_key_here
-   CHROMA_DB_DIR=./chroma_db
-   TTS_BACKEND=edge
-   ```
+2.  **Create a virtual environment:**
+    ```bash
+    python -m venv myvenv
+    source myvenv/bin/activate 
+    ```
 
-3. **Run the application:**
-   ```bash
-   python main.py
-   ```
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-## Module Descriptions
+4.  **Create a `.env` file** in the root directory by copying the example below. This file stores your API keys and configuration.
+    ```
+    GROQ_API_KEY="your_groq_api_key_here"
+    ```
 
-### `main.py`
-- Application entry point
-- Initializes all components
-- Handles startup/shutdown
+5.  **Place your documents** into the `docs/` directory. The `ingest_docs.py` script currently supports PDF files.
 
-### `config.py`
-- All configuration variables
-- Environment variable loading
-- Audio and TTS settings
+6.  **Ingest your documents** into the vector database. This command will process the files in the `docs/` folder and store them in the `chroma_db/` directory.
+    ```bash
+    python ingest_docs.py
+    ```
 
-### `app_state.py`
-- Thread-safe state management
-- Event coordination between components
-- Queue management for audio processing
+## Application Flow
 
-### `audio_utils.py`
-- Audio recording and processing
-- Speech detection with VAD
-- Whisper transcription via Groq
-- Microphone calibration
+The application works in two main modes: Voice or Text.
 
-### `tts_engine.py`
-- Text-to-speech synthesis
-- Multiple TTS backend support (Edge, gTTS, pyttsx3, Coqui)
-- Streaming audio playback
-- Worker thread management
+### 1. Voice Assistant Flow (`main.py`)
+-   **`main.py`**: The main entry point that initializes and starts all components.
+-   **`conversation_handler.py`**: This script orchestrates the voice interaction.
+    - It uses **`audio_utils.py`** to listen via the microphone, detect speech, and transcribe it to text using the Whisper model (via Groq).
+-   **`rag_system.py`**: The user's transcribed query is sent here.
+    - It searches the Chroma vector database for the 3 most relevant document chunks.
+    - It combines the user's query and the retrieved context into a prompt.
+    - This prompt is sent to a Large Language Model (LLM) using Groq (e.g., Llama 3) to generate a response.
+-   **`tts_engine.py`**: The LLM's response text is converted back into speech in real-time.
+-   The audio is played back to the user, completing the loop.
 
-### `rag_system.py`
-- Vector database integration
-- Document retrieval
-- LLM integration with Groq
-- Streaming response generation
+### 2. Text-Based Query Flow (`query_terminal.py`)
+-   **`query_terminal.py`**: This script provides a simple command-line interface for interacting with your documents.
+-   It takes a text query directly from the terminal.
+-   The query is sent to the **`rag_system.py`**, which performs the same retrieval and generation process as in the voice flow (searching ChromaDB and calling the LLM).
+-   The final response from the LLM is printed directly to the terminal.
 
-### `conversation_handler.py`
-- Main conversation loop
-- User input processing
-- Response coordination
-- Chat history management
+## How to Run
 
-## Features
+You must have completed the setup instructions above, especially ingesting your documents.
 
-- **Voice Input**: Real-time speech recognition using Whisper
-- **Voice Output**: Multiple TTS backends with streaming playback
-- **RAG Integration**: Query your document collection through voice
-- **Adaptive Audio**: Dynamic noise threshold adjustment
-- **Streaming Responses**: Start speaking as soon as text is generated
-- **Thread Safety**: Concurrent audio processing and synthesis
+### Running the Text-Based Query Terminal
+This is the simplest way to interact with your documents.
 
-## Environment Variables
+```bash
+python query_terminal.py
+```
+You will see a `>` prompt. Type your question and press Enter. Type `exit` or `quit` to end the session.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GROQ_API_KEY` | - | Required: Your Groq API key |
-| `CHROMA_DB_DIR` | `./chroma_db` | Vector database directory |
-| `EMBED_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq LLM model |
-| `TTS_BACKEND` | `coqui` | TTS backend (edge/gtts/pyttsx3/coqui/auto) |
-| `FRAME_MS` | `30` | Audio frame duration |
-| `END_SILENCE_MS` | `800` | Silence duration to end recording |
-| `MAX_UTTERANCE_SEC` | `10` | Maximum recording duration |
-| `INPUT_DEVICE_INDEX` | auto | Microphone device index |
-| `DEBUG_AUDIO` | `0` | Enable audio debug output |
+### Running the Voice Assistant
+This provides a full voice-to-voice interaction.
 
-## Usage
-
-1. Run `python main.py`
-2. Speak when prompted
-3. The assistant will respond with voice
-4. Say "exit", "quit", "goodbye", or "stop" to end
-
-## Dependencies
-
-Core dependencies are automatically installed with `pip install -r requirements.txt`. Some TTS backends may require additional system dependencies.
+```bash
+python main.py
+```
+The application will calibrate your microphone's noise level and then prompt you to speak. Say "exit", "quit", or "goodbye" to stop the assistant.
