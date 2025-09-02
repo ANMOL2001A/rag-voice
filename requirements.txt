@@ -12,3 +12,10 @@ groq
 python-dotenv
 webrtcvad
 pypdf
+edge-tts
+gtts
+pygame
+pyttsx3
+TTS
+soundfile
+scipy
