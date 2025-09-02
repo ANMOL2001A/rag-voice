@@ -48,7 +48,7 @@ DEBUG_AUDIO = os.getenv("DEBUG_AUDIO", "0") == "1"
 
 # TTS settings
 TTS_BACKEND = os.getenv("TTS_BACKEND", "coqui")
-CHUNK_SIZE = 50  # Characters per TTS chunk for streaming
+CHUNK_SIZE = 30  # Reduced chunk size for faster processing
 
 # ============ THREAD SAFE STATE ============
 class AppState:
@@ -58,16 +58,22 @@ class AppState:
         self.is_processing = threading.Event()
         self.stop_speaking = threading.Event()
         self.tts_queue = queue.Queue()
+        self.audio_queue = queue.Queue()  # New queue for ready audio
         self.chat_history = []
         self.lock = threading.Lock()
     
     def reset_audio_flags(self):
         self.is_speaking.clear()
         self.stop_speaking.clear()
-        # Clear TTS queue
+        # Clear both queues
         while not self.tts_queue.empty():
             try:
                 self.tts_queue.get_nowait()
+            except:
+                break
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
             except:
                 break
 
@@ -138,21 +144,24 @@ def calibrate_noise(seconds=2.0):
         data = sd.rec(int(seconds * RATE), samplerate=RATE, channels=1, dtype="int16", device=device)
         sd.wait()
         
-        # Calculate RMS with better noise estimation
+        # Calculate RMS with better noise estimation and filtering
         rms_values = []
         chunk_size = int(RATE * 0.1)  # 100ms chunks
         for i in range(0, len(data), chunk_size):
             chunk = data[i:i+chunk_size]
             if len(chunk) > 0:
                 rms = float(np.sqrt(np.mean(chunk.astype(np.int64) ** 2)))
-                rms_values.append(rms)
+                # Filter out very high spikes (likely noise)
+                if rms < 5000:  # Reasonable upper limit
+                    rms_values.append(rms)
         
-        # Use median + some multiplier for better threshold
+        # Use percentile-based threshold for better noise handling
         if rms_values:
-            median_rms = np.median(rms_values)
-            threshold = max(400.0, median_rms * 4.0)  # Increased multiplier
+            # Use 75th percentile + margin for more stable threshold
+            threshold_base = np.percentile(rms_values, 75)
+            threshold = max(500.0, threshold_base * 3.0)  # More conservative
         else:
-            threshold = 600.0
+            threshold = 800.0
             
         print(f"🎯 Noise threshold set to: {threshold:.1f}")
         return threshold
@@ -189,7 +198,7 @@ def transcribe_audio_with_retry(file_path: str, max_retries: int = 2) -> str:
             result = transcription.strip()
             
             # Filter out very short or nonsensical transcriptions
-            if len(result) > 2 and not result.lower() in ["you", "thank you", "thanks"]:
+            if len(result) > 1 and result.lower().strip() not in ["", "you", "uh", "um"]:
                 return result
             return ""
             
@@ -201,9 +210,10 @@ def transcribe_audio_with_retry(file_path: str, max_retries: int = 2) -> str:
                 print(f"❌ Transcription failed after {max_retries + 1} attempts: {e}")
                 return ""
 
-# ============ ENHANCED TTS WITH STREAMING ============
+# ============ ENHANCED TTS WITH CONTINUOUS STREAMING ============
 _tts_engine = None
 _tts_worker_thread = None
+_audio_player_thread = None
 _tts_running = False
 
 def _init_tts():
@@ -251,7 +261,7 @@ def _init_tts():
             elif backend == "pyttsx3":
                 import pyttsx3
                 _tts_engine = pyttsx3.init()
-                _tts_engine.setProperty('rate', 200)
+                _tts_engine.setProperty('rate', 220)  # Slightly faster
                 _tts_engine.setProperty('volume', 0.9)
                 _tts_engine.backend_name = "pyttsx3"
                 print("✅ pyttsx3 TTS initialized")
@@ -307,8 +317,61 @@ def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE) -> list:
     
     return [chunk for chunk in chunks if chunk]
 
+def _audio_player_worker():
+    """Separate worker thread for playing audio continuously"""
+    global _tts_running
+    
+    while _tts_running:
+        try:
+            # Get audio data from queue
+            audio_data = app_state.audio_queue.get(timeout=0.1)
+            
+            if audio_data is None:  # Poison pill
+                break
+                
+            if app_state.stop_speaking.is_set():
+                continue
+            
+            # Play audio based on format
+            try:
+                app_state.is_speaking.set()
+                
+                if isinstance(audio_data, dict):
+                    # Audio with metadata
+                    if audio_data['format'] == 'wav_array':
+                        sd.play(audio_data['data'], samplerate=audio_data['samplerate'])
+                        sd.wait()
+                    elif audio_data['format'] == 'wav_file':
+                        import soundfile as sf
+                        data, fs = sf.read(audio_data['file'])
+                        sd.play(data, fs)
+                        sd.wait()
+                        # Clean up temp file
+                        try:
+                            os.unlink(audio_data['file'])
+                        except:
+                            pass
+                elif isinstance(audio_data, str):
+                    # Direct pyttsx3 text
+                    if hasattr(_tts_engine, 'say'):
+                        _tts_engine.say(audio_data)
+                        _tts_engine.runAndWait()
+                        
+            except Exception as e:
+                print(f"⚠️  Audio playback error: {e}")
+                
+        except queue.Empty:
+            app_state.is_speaking.clear()
+            continue
+        except Exception as e:
+            print(f"❌ Audio player error: {e}")
+            break
+    
+    app_state.is_speaking.clear()
+    print("🔇 Audio player stopped")
+
 def _tts_worker():
-    """Background worker for TTS processing with multiple backend support"""
+    """Background worker for TTS synthesis - now focuses only on synthesis"""
     global _tts_running
     _tts_running = True
     
@@ -328,9 +391,8 @@ def _tts_worker():
             if not clean_text:
                 continue
             
-            # Synthesize and play based on backend
+            # Synthesize audio (don't play here - just prepare)
             try:
-                app_state.is_speaking.set()
                 backend = getattr(_tts_engine, 'backend_name', 'unknown')
                 
                 if backend == "edge":
@@ -338,49 +400,51 @@ def _tts_worker():
                     import asyncio
                     import tempfile
                     
-                    async def _edge_speak():
+                    async def _edge_synthesize():
                         try:
-                            communicate = _tts_engine.Communicate(clean_text, "en-US-AriaNeural")
+                            # More robust Edge TTS with better error handling
+                            communicate = _tts_engine.Communicate(
+                                clean_text, 
+                                "en-US-AriaNeural",
+                                rate="+10%",  # Slightly faster speech
+                                volume="+0%"
+                            )
                             audio_data = b""
+                            
                             async for chunk in communicate.stream():
-                                if chunk["type"] == "audio":
+                                if app_state.stop_speaking.is_set():
+                                    break
+                                if chunk["type"] == "audio" and chunk.get("data"):
                                     audio_data += chunk["data"]
                             
-                            if audio_data and not app_state.stop_speaking.is_set():
-                                # Save to temp file and play
+                            if audio_data and len(audio_data) > 100 and not app_state.stop_speaking.is_set():
+                                # Save to temp file
                                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                                     f.write(audio_data)
                                     temp_file = f.name
                                 
-                                # Play using sounddevice
-                                import soundfile as sf
-                                try:
-                                    data, fs = sf.read(temp_file)
-                                    sd.play(data, fs)
-                                    sd.wait()
-                                except:
-                                    # Fallback: try with pygame
-                                    import pygame
-                                    pygame.mixer.init()
-                                    pygame.mixer.music.load(temp_file)
-                                    pygame.mixer.music.play()
-                                    while pygame.mixer.music.get_busy():
-                                        time.sleep(0.1)
+                                # Queue for immediate playback
+                                app_state.audio_queue.put({
+                                    'format': 'wav_file',
+                                    'file': temp_file
+                                })
+                            elif len(audio_data) <= 100:
+                                # Skip very short audio (likely silence)
+                                pass
                                 
-                                os.unlink(temp_file)
                         except Exception as e:
-                            print(f"Edge TTS error: {e}")
+                            # Don't print error for very short texts or silence
+                            if len(clean_text) > 3:
+                                print(f"Edge TTS synthesis error: {e}")
                     
                     try:
-                        asyncio.run(_edge_speak())
-                    except:
-                        # Fallback to synchronous approach
-                        pass
+                        asyncio.run(_edge_synthesize())
+                    except Exception as e:
+                        print(f"Edge TTS async error: {e}")
                         
                 elif backend == "gtts":
                     # Google TTS implementation
                     import tempfile
-                    import pygame
                     
                     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                         tts = _tts_engine(text=clean_text, lang='en', slow=False)
@@ -388,62 +452,66 @@ def _tts_worker():
                         temp_file = f.name
                     
                     if not app_state.stop_speaking.is_set():
-                        pygame.mixer.music.load(temp_file)
-                        pygame.mixer.music.play()
-                        while pygame.mixer.music.get_busy():
-                            time.sleep(0.1)
-                            if app_state.stop_speaking.is_set():
-                                pygame.mixer.music.stop()
-                                break
-                    
-                    os.unlink(temp_file)
+                        app_state.audio_queue.put({
+                            'format': 'wav_file',
+                            'file': temp_file
+                        })
                     
                 elif backend == "coqui" and hasattr(_tts_engine, "tts"):
                     wav = _tts_engine.tts(clean_text)
                     if not app_state.stop_speaking.is_set():
-                        sd.play(np.array(wav), samplerate=22050)
-                        sd.wait()
+                        app_state.audio_queue.put({
+                            'format': 'wav_array',
+                            'data': np.array(wav),
+                            'samplerate': 22050
+                        })
                         
                 else:  # pyttsx3 or fallback
                     if not app_state.stop_speaking.is_set():
-                        _tts_engine.say(clean_text)
-                        _tts_engine.runAndWait()
+                        # For pyttsx3, we still need to play directly due to its nature
+                        app_state.audio_queue.put(clean_text)
                         
             except Exception as e:
                 print(f"⚠️  TTS synthesis error: {e}")
                 
         except queue.Empty:
-            app_state.is_speaking.clear()
             continue
         except Exception as e:
-            print(f"❌ TTS worker error: {e}")
+            print(f"❌ TTS synthesis worker error: {e}")
             break
     
-    app_state.is_speaking.clear()
-    print("🔇 TTS worker stopped")
+    print("🔇 TTS synthesis worker stopped")
 
-def start_tts_worker():
-    """Start the TTS background worker"""
-    global _tts_worker_thread
+def start_tts_workers():
+    """Start both TTS synthesis and audio playback workers"""
+    global _tts_worker_thread, _audio_player_thread
+    
+    # Start synthesis worker
     if _tts_worker_thread is None or not _tts_worker_thread.is_alive():
         _tts_worker_thread = threading.Thread(target=_tts_worker, daemon=True)
         _tts_worker_thread.start()
+    
+    # Start audio player worker
+    if _audio_player_thread is None or not _audio_player_thread.is_alive():
+        _audio_player_thread = threading.Thread(target=_audio_player_worker, daemon=True)
+        _audio_player_thread.start()
 
-def stop_tts_worker():
-    """Stop the TTS background worker"""
+def stop_tts_workers():
+    """Stop both TTS workers"""
     global _tts_running
     _tts_running = False
-    app_state.tts_queue.put(None)  # Poison pill
+    app_state.tts_queue.put(None)  # Poison pill for synthesis worker
+    app_state.audio_queue.put(None)  # Poison pill for audio player
 
 def speak_streaming(text: str):
-    """Add text to TTS queue for streaming synthesis"""
+    """Add text to TTS queue for immediate synthesis and playback"""
     if not text or not text.strip():
         return
     
-    # Split text into chunks
+    # Split text into smaller chunks for faster processing
     chunks = split_text_into_chunks(text, CHUNK_SIZE)
     
-    # Add chunks to queue
+    # Add chunks to synthesis queue immediately
     for chunk in chunks:
         if chunk:
             app_state.tts_queue.put(chunk)
@@ -686,7 +754,9 @@ def handle_conversation():
                 farewell = "Goodbye! Have a great day!"
                 print(f"🤖 Assistant: {farewell}")
                 speak_streaming(farewell)
-                time.sleep(3)  # Wait for TTS to finish
+                # Wait for speech to complete
+                while app_state.is_speaking.is_set() or not app_state.audio_queue.empty():
+                    time.sleep(0.1)
                 break
             
             # Process query
@@ -694,9 +764,8 @@ def handle_conversation():
             print("🤖 Assistant: ", end="", flush=True)
             
             full_response = ""
-            first_chunk = True
             
-            # Get streaming response and speak it
+            # Get streaming response and speak it immediately
             for chunk in get_streaming_rag_response(user_query):
                 if app_state.stop_speaking.is_set():
                     break
@@ -704,19 +773,15 @@ def handle_conversation():
                 print(chunk, end="", flush=True)
                 full_response += chunk
                 
-                # Start speaking immediately on first chunk
-                if first_chunk:
-                    speak_streaming(chunk)
-                    first_chunk = False
-                else:
-                    speak_streaming(chunk)
+                # Send chunk to TTS immediately for synthesis
+                speak_streaming(chunk)
             
             print()  # New line after response
             app_state.is_processing.clear()
             
-            # Wait for TTS to finish before next iteration
-            while app_state.is_speaking.is_set():
-                time.sleep(0.1)
+            # Wait for all TTS to finish before next iteration
+            while not app_state.tts_queue.empty() or not app_state.audio_queue.empty() or app_state.is_speaking.is_set():
+                time.sleep(0.05)  # Shorter sleep for better responsiveness
             
             # Store in history
             if full_response:
@@ -751,8 +816,8 @@ def main():
         print("❌ Failed to initialize TTS, exiting...")
         return
     
-    # Start TTS worker
-    start_tts_worker()
+    # Start TTS workers
+    start_tts_workers()
     
     try:
         print("\n🎤 Voice Assistant Ready!")
@@ -772,7 +837,7 @@ def main():
     finally:
         # Cleanup
         interrupt_speech()
-        stop_tts_worker()
+        stop_tts_workers()
         print("👋 Voice Assistant stopped")
 
 if __name__ == "__main__":
