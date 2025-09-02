@@ -45,7 +45,6 @@ Respond naturally and conversationally.
 """.strip()),
 ])
 
-# ============ RAG FUNCTIONS ============
 def format_history(hist, max_turns=2):
     """Format chat history for context"""
     if not hist:
