@@ -19,3 +19,5 @@ pyttsx3
 TTS
 soundfile
 scipy
+unstructured
+python-docx
