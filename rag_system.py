@@ -54,6 +54,7 @@ def format_history(hist, max_turns=2):
     
     return "\n".join(formatted)
 
+
 def get_streaming_rag_response(question: str) -> Iterator[str]:
     """Get streaming response from RAG system"""
     try:

@@ -32,6 +32,7 @@ def main():
 
             print("Searching for relevant documents...")
             similar_results = retriever.invoke(query)
+            print(similar_results)
             
             if not similar_results:
                 print("No relevant documents found.")
